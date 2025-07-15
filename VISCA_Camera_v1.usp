@@ -1,0 +1,608 @@
+/*******************************************************************************************
+  SIMPL+ Module Information
+  (Fill in comments below)
+*******************************************************************************************/
+/*
+Dealer Name: USN
+System Name: VISCA
+System Number:
+Programmer:StigK
+Comments:
+*/
+
+/*******************************************************************************************
+  Compiler Directives
+  (Uncomment and declare compiler directives as needed)
+*******************************************************************************************/
+
+#CATEGORY "19" // Camera
+//#PRINT_TO_TRACE
+#DEFAULT_VOLATILE
+#ENABLE_STACK_CHECKING
+#ENABLE_TRACE
+#DEFINE_CONSTANT POLL_INTERVAL 10 // Poll every 10 seconds
+
+
+#HELP_BEGIN
+
+Transmit Method: Asynchronous Interface Half
+Duplex Serial Communication
+
+LUMENS:
+Transmit Speed: 9600bps or 38400bps
+****************************************
+MINRAY:
+Transmit Speed: 2400/4800/9600/115200bps
+****************************************
+VHD:
+Baud rate: 2400/4800/9600 bit/s.
+TCP Control port: 5678 (default) but changable thru OSD
+*******************************************************
+
+Start bit: 1Bit
+Parity Check: NA
+Data Bit: 8Bit
+Stop Bit: 1Bit
+
+id = 1d-5d
+Pan-tilt_speed[0x01_to_0x18] = 1d-24d
+
+#HELP_END
+
+/*******************************************************************************************
+  Include Libraries
+  (Uncomment and include additional libraries as needed)
+*******************************************************************************************/
+// #CRESTRON_LIBRARY ""
+// #USER_LIBRARY ""
+
+/*******************************************************************************************
+  DIGITAL, ANALOG and SERIAL INPUTS and OUTPUTS
+  (Uncomment and declare inputs and outputs as needed)
+*******************************************************************************************/
+ DIGITAL_INPUT _SKIP_,CamOn,CamOff,_SKIP_;
+ DIGITAL_INPUT CamUp,CamDown,CamLeft,CamRight,_SKIP_;
+ DIGITAL_INPUT CamZoomIn,CamZoomOut,_SKIP_;
+ DIGITAL_INPUT FocusFar,FocusNear,AutoFocusToggle,OnePushAutoFocus,_SKIP_;
+ DIGITAL_INPUT CamPreset1Recall,CamPreset2Recall,CamPreset3Recall,CamPreset4Recall,CamPreset5Recall,_SKIP_;
+ DIGITAL_INPUT CamPreset1Set,CamPreset2Set,CamPreset3Set,CamPreset4Set,CamPreset5Set,_SKIP_;
+
+ DIGITAL_INPUT GetFirmware,FactoryReset,FlipOn,FlipOff,MenuOn,MenuOff,_SKIP_;
+ DIGITAL_INPUT QueryPowerStatus; // Added input to manually query power status
+ DIGITAL_INPUT TrackingOn,TrackingOff,QueryTrackingStatus; // Added tracking control and query
+ DIGITAL_INPUT _SKIP_,MirrorOn,MirrorOff;
+
+ // Reserved Presets
+ DIGITAL_INPUT HomeShot;                // Preset 0: Home Shot
+ DIGITAL_INPUT TrackingShot;           // Preset 1: Tracking Shot
+ // Preset 80/81 already covered by TrackingOn/TrackingOff
+ DIGITAL_INPUT StartGroupTracking;     // Preset 82: Start Group Tracking
+ DIGITAL_INPUT PauseGroupTracking;     // Preset 83: Pause Group Tracking
+ DIGITAL_INPUT ResumeIntSwitching;     // Preset 84: Resume Intelligent Switching
+ DIGITAL_INPUT PauseIntSwitchingGF;    // Preset 85: Pause Intelligent Switching, output Group Framing
+ DIGITAL_INPUT PauseIntSwitchingPT;    // Preset 86: Pause Intelligent Switching, output Presenter Tracking
+ DIGITAL_INPUT OSDMenuToggle;          // Preset 95: OSD Menu Toggle
+ DIGITAL_INPUT Reboot;                 // Preset 99: Reboot
+ DIGITAL_INPUT PresetZone1;            // Preset 101: Preset Zone 1
+ DIGITAL_INPUT PresetZone2;            // Preset 102: Preset Zone 2
+ DIGITAL_INPUT PresetZone3;            // Preset 103: Preset Zone 3
+ DIGITAL_INPUT PresetZone4;            // Preset 104: Preset Zone 4
+ DIGITAL_INPUT TrackingProfile1;       // Preset 105: Tracking Profile 1
+ DIGITAL_INPUT TrackingProfile2;       // Preset 106: Tracking Profile 2
+ DIGITAL_INPUT TrackingProfile3;       // Preset 107: Tracking Profile 3
+ DIGITAL_INPUT TrackingProfile4;       // Preset 108: Tracking Profile 4
+
+ ANALOG_INPUT  Id;
+ STRING_INPUT  rx$[100]; // Now used for parsing camera responses
+
+ STRING_OUTPUT _SKIP_,tx$;
+ DIGITAL_OUTPUT _SKIP_,_SKIP_,_SKIP_,_SKIP_,_SKIP_; // Create spacing
+ DIGITAL_OUTPUT PowerIsOn; // Feedback indicating camera power status
+ DIGITAL_OUTPUT TrackingIsActive; // Feedback indicating tracking status
+ ANALOG_OUTPUT LastPresetRecalled; // Feedback indicating which preset was last recalled
+
+ 
+INTEGER_Parameter Speed;
+
+#BEGIN_PARAMETER_PROPERTIES Speed
+	propDefaultValue = 15d;
+    propList = { 5d , "Level-1" }, { 10d , "Level-2" },{ 15d , "Level-3" },{ 20d , "Level-4" },{ 24d , "Level-5" };
+ #END_PARAMETER_PROPERTIES
+
+
+
+
+integer ispeed;
+integer pollCounter;
+string rxBuffer[100];
+INTEGER isAutoFocus = 1; // 1 for auto, 0 for manual
+
+
+String_Function PanTilt(String Data)
+{
+String tmp[20];
+makeString(tmp,"%s%s%s%s%s%s",chr(128+Id),"\x01\x06\x01",chr(speed),chr(speed),Data,"\xFF");
+return(tmp);  
+
+}
+ 
+String_Function Zoom(String Data)
+{
+STRING tmp[20];
+makeString(tmp,"%s%s%s%s",chr(128+Id),"\x01\x04",Data,"\xFF");
+return(tmp);  
+
+}
+
+String_Function Focus(STRING data)
+{
+    STRING tmp[20];
+    makeString(tmp, "%s%s%s%s", chr(128+Id), "\x01\x04", data, "\xFF");
+    return(tmp);
+}  
+
+String_Function Preset(String Data)
+{
+String tmp[20];
+makeString(tmp,"%s%s%s%s",chr(128+Id),"\x01\x04\x3F",Data,"\xFF");
+return(tmp);  
+
+}
+
+PUSH CamOn
+{
+    makeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x00\x02\xFF");
+    // Query power status after sending power on command (with slight delay)
+    delay(50);
+    makeString(tx$,"%s%s",chr(128+Id),"\x09\x04\x00\xFF");
+}
+
+PUSH CamOff
+{
+    makeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x00\x03\xFF");
+    // Query power status after sending power off command (with slight delay)
+    delay(50);
+    makeString(tx$,"%s%s",chr(128+Id),"\x09\x04\x00\xFF");
+}
+
+
+PUSH CamUP
+{
+	tx$=PanTilt("\x03\x01");
+}
+PUSH CamDown
+{
+	tx$=PanTilt("\x03\x02");
+}
+PUSH CamLeft
+{
+	tx$=PanTilt("\x01\x03");
+}
+PUSH CamRight
+{
+	tx$=PanTilt("\x02\x03");
+}
+
+		
+RELEASE CamUp,CamDown,CamLeft,CamRight
+
+{
+	
+	tx$=PanTilt("\x03\x03");
+	
+    
+}
+
+PUSH CamZoomIn
+{
+ tx$=Zoom("\x02");           
+}
+
+PUSH CamZoomOut
+{
+ tx$=Zoom("\x03");           
+}
+
+RELEASE CamZoomIn,CamZoomOut
+{
+  tx$=Zoom("\x00");
+}
+
+PUSH FocusFar
+{
+    tx$ = Focus("\x08\x02");
+}
+
+PUSH FocusNear
+{
+    tx$ = Focus("\x08\x03");
+}
+
+RELEASE FocusFar, FocusNear
+{
+    tx$ = Focus("\x08\x00");
+}
+
+PUSH AutoFocusToggle
+{
+    if (isAutoFocus)
+    {
+        // Currently Auto, switch to Manual
+        tx$ = Focus("\x38\x03");
+        isAutoFocus = 0;
+    }
+    else
+    {
+        // Currently Manual, switch to Auto
+        tx$ = Focus("\x38\x02");
+        isAutoFocus = 1;
+    }
+}
+
+PUSH OnePushAutoFocus
+{
+    tx$ = Focus("\x18\x01");
+}
+
+PUSH CamPreset1Recall
+	{
+	tx$=Preset("\x02\x01");
+	LastPresetRecalled = 1;
+	}
+PUSH CamPreset2Recall
+	{
+	tx$=Preset("\x02\x02");
+	LastPresetRecalled = 2;
+	}
+PUSH CamPreset3Recall
+	{
+	tx$=Preset("\x02\x03");
+	LastPresetRecalled = 3;
+	}
+PUSH CamPreset4Recall
+	{
+	tx$=Preset("\x02\x04");
+	LastPresetRecalled = 4;
+	}
+PUSH CamPreset5Recall
+	{
+	tx$=Preset("\x02\x05");
+	LastPresetRecalled = 5;
+	}
+   
+PUSH CamPreset1Set
+	{
+	tx$=Preset("\x01\x01");
+	}
+PUSH CamPreset2Set
+	{
+	tx$=Preset("\x01\x02");
+	}
+PUSH CamPreset3Set
+	{
+	tx$=Preset("\x01\x03");
+	}
+PUSH CamPreset4Set
+	{
+	tx$=Preset("\x01\x04");
+	}
+PUSH CamPreset5Set
+	{
+	tx$=Preset("\x01\x05");
+	}
+
+
+PUSH FactoryReset
+{
+ MakeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x3F\x03\x00\xFF");
+}
+
+PUSH GetFirmware
+
+ {
+ MakeString(tx$,"%s%s",chr(128+Id),"\x01\x02\x03\xFF");
+ }
+
+
+PUSH MirrorOn
+{
+  MakeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x61\x02\xFF");
+}
+
+PUSH MirrorOff
+{
+  MakeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x61\x03\xFF");
+}
+
+
+
+
+
+PUSH FlipOn
+{
+ MakeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x66\x02\xFF");
+}
+PUSH FlipOff
+{
+ MakeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x66\x03\xFF");
+}
+ 
+PUSH MenuOn
+{
+ MakeString(tx$,"%s%s",chr(128+Id),"\x01\x06\x06\x02\xFF");
+}
+PUSH MenuOff
+{
+ MakeString(tx$,"%s%s",chr(128+Id),"\x01\x06\x06\x03\xFF");
+}
+
+PUSH QueryPowerStatus
+{
+    // Send power inquiry command
+    makeString(tx$,"%s%s",chr(128+Id),"\x09\x04\x00\xFF");
+}
+
+// Reserved Preset Handlers
+
+PUSH HomeShot
+{
+    // Call Preset 0: Home Shot
+    makeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x3F\x02\x00\xFF");
+    LastPresetRecalled = 0;
+}
+
+PUSH TrackingShot
+{
+    // Call Preset 1: Tracking Shot
+    makeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x3F\x02\x01\xFF");
+    LastPresetRecalled = 1;
+}
+
+// TrackingOn/Off already implemented above
+
+PUSH StartGroupTracking
+{
+    // Call Preset 82: Start Group Tracking
+    makeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x3F\x02\x52\xFF"); // 0x52 = 82 decimal
+    LastPresetRecalled = 82;
+}
+
+PUSH PauseGroupTracking
+{
+    // Call Preset 83: Pause Group Tracking
+    makeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x3F\x02\x53\xFF"); // 0x53 = 83 decimal
+    LastPresetRecalled = 83;
+}
+
+PUSH ResumeIntSwitching
+{
+    // Call Preset 84: Resume Intelligent Switching
+    makeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x3F\x02\x54\xFF"); // 0x54 = 84 decimal
+    LastPresetRecalled = 84;
+}
+
+PUSH PauseIntSwitchingGF
+{
+    // Call Preset 85: Pause Intelligent Switching, output Group Framing camera feed
+    makeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x3F\x02\x55\xFF"); // 0x55 = 85 decimal
+    LastPresetRecalled = 85;
+}
+
+PUSH PauseIntSwitchingPT
+{
+    // Call Preset 86: Pause Intelligent Switching, output Presenter Tracking camera feed
+    makeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x3F\x02\x56\xFF"); // 0x56 = 86 decimal
+    LastPresetRecalled = 86;
+}
+
+PUSH OSDMenuToggle
+{
+    // Call Preset 95: OSD Menu Toggle
+    makeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x3F\x02\x5F\xFF"); // 0x5F = 95 decimal
+    LastPresetRecalled = 95;
+}
+
+PUSH Reboot
+{
+    // Call Preset 99: Reboot Camera
+    makeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x3F\x02\x63\xFF"); // 0x63 = 99 decimal
+    LastPresetRecalled = 99;
+}
+
+PUSH PresetZone1
+{
+    // Call Preset 101: Preset Zone 1
+    makeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x3F\x02\x65\xFF"); // 0x65 = 101 decimal
+    LastPresetRecalled = 101;
+}
+
+PUSH PresetZone2
+{
+    // Call Preset 102: Preset Zone 2
+    makeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x3F\x02\x66\xFF"); // 0x66 = 102 decimal
+    LastPresetRecalled = 102;
+}
+
+PUSH PresetZone3
+{
+    // Call Preset 103: Preset Zone 3
+    makeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x3F\x02\x67\xFF"); // 0x67 = 103 decimal
+    LastPresetRecalled = 103;
+}
+
+PUSH PresetZone4
+{
+    // Call Preset 104: Preset Zone 4
+    makeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x3F\x02\x68\xFF"); // 0x68 = 104 decimal
+    LastPresetRecalled = 104;
+}
+
+PUSH TrackingProfile1
+{
+    // Call Preset 105: Tracking Profile 1
+    makeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x3F\x02\x69\xFF"); // 0x69 = 105 decimal
+    LastPresetRecalled = 105;
+}
+
+PUSH TrackingProfile2
+{
+    // Call Preset 106: Tracking Profile 2
+    makeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x3F\x02\x6A\xFF"); // 0x6A = 106 decimal
+    LastPresetRecalled = 106;
+}
+
+PUSH TrackingProfile3
+{
+    // Call Preset 107: Tracking Profile 3
+    makeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x3F\x02\x6B\xFF"); // 0x6B = 107 decimal
+    LastPresetRecalled = 107;
+}
+
+PUSH TrackingProfile4
+{
+    // Call Preset 108: Tracking Profile 4
+    makeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x3F\x02\x6C\xFF"); // 0x6C = 108 decimal
+    LastPresetRecalled = 108;
+}
+
+// Camera tracking control functions using reserved presets
+// Preset 80: Start Tracking
+// Preset 81: Pause Tracking
+PUSH TrackingOn
+{
+    // Call preset 80 to start tracking (0x50 = 80 decimal)
+    makeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x3F\x02\x50\xFF");
+    
+    // Update tracking status
+    TrackingIsActive = 1;
+    LastPresetRecalled = 80;
+}
+
+PUSH TrackingOff
+{
+    // Call preset 81 to pause tracking (0x51 = 81 decimal)
+    makeString(tx$,"%s%s",chr(128+Id),"\x01\x04\x3F\x02\x51\xFF");
+    
+    // Update tracking status
+    TrackingIsActive = 0;
+    LastPresetRecalled = 81;
+}
+
+PUSH QueryTrackingStatus
+{
+    // For Crestron 1 Beyond cameras, there's no direct query for tracking status
+    // We would need to maintain state based on which commands were sent
+    // No action needed here as we're tracking state internally
+}
+
+
+// Use a 1-second timer for periodic power status polling
+EVENT
+{
+    // This event handler is triggered by the system every second
+    // We'll use a counter to create our own polling interval
+    pollCounter = pollCounter + 1;
+    
+    if(pollCounter >= POLL_INTERVAL)
+    {
+        // Send power inquiry command
+        makeString(tx$,"%s%s",chr(128+Id),"\x09\x04\x00\xFF");
+        
+        // No need to query tracking status as we're tracking it internally
+        
+        // Reset counter
+        pollCounter = 0;
+    }
+}
+
+/*
+SOCKETCONNECT
+{
+    // TODO:  Add code here
+}
+*/
+
+/*
+SOCKETDISCONNECT
+{
+    // TODO:  Add code here
+}
+*/
+
+/*
+SOCKETRECEIVE
+{
+    // TODO:  Add code here
+}
+*/
+
+/*
+SOCKETSTATUS
+{
+    // TODO:  Add code here
+}
+*/
+
+/*******************************************************************************************
+  Main()
+  Uncomment and place one-time startup code here
+  (This code will get called when the system starts up)
+*******************************************************************************************/
+// Parse incoming VISCA responses
+CHANGE rx$
+{
+    // Local variable declarations must be at the top of the function
+    string response[100];
+    integer endPos;
+    
+    // Append incoming data to buffer
+    rxBuffer = rxBuffer + rx$;
+    
+    // Check if buffer contains a complete VISCA response (ending with 0xFF)
+    while(find(rxBuffer, "\xFF") > 0)
+    {
+        // Extract the complete response
+        endPos = find(rxBuffer, "\xFF");
+        response = mid(rxBuffer, 1, endPos);
+        rxBuffer = right(rxBuffer, len(rxBuffer) - endPos);
+        
+        // Check for power status response
+        // Power ON response: y0 50 02 FF (where y is camera address)
+        // Power OFF response: y0 50 03 FF
+        if(len(response) >= 4 && byte(response, 2) = 0x50)
+        {
+            if(byte(response, 3) = 0x02) // Power ON
+            {
+                PowerIsOn = 1;
+            }
+            else if(byte(response, 3) = 0x03) // Power OFF
+            {
+                PowerIsOn = 0;
+            }
+        }
+        
+        // For Crestron 1 Beyond cameras, tracking status is maintained internally
+        // based on which preset was called, rather than parsing responses
+    }
+}
+
+Function Main()
+{
+    // Initialize variables
+    rxBuffer = "";
+    PowerIsOn = 0;
+    TrackingIsActive = 0;
+    LastPresetRecalled = 0;
+    pollCounter = 0;
+    isAutoFocus = 1; // Assume camera starts in auto-focus mode
+    
+    // Wait for initialization to complete
+    WaitForInitializationComplete();
+    
+    // Initial power status query
+    delay(500); // Short delay to ensure system is ready
+    makeString(tx$,"%s%s",chr(128+Id),"\x09\x04\x00\xFF");
+    
+    // Initialize tracking status as off
+    // For Crestron 1 Beyond cameras, we maintain tracking state internally
+}
